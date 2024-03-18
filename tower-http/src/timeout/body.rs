@@ -51,8 +51,7 @@ pin_project! {
     /// ```
     pub struct TimeoutBody<B> {
         timeout: Duration,
-        #[pin]
-        sleep: Option<Sleep>,
+        sleep: Option<Pin<Box<Sleep>>>,
         #[pin]
         body: B,
     }
@@ -81,15 +80,14 @@ where
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        let mut this = self.project();
+        let this = self.project();
 
         // Start the `Sleep` if not active.
-        let sleep_pinned = if let Some(some) = this.sleep.as_mut().as_pin_mut() {
-            some
-        } else {
-            this.sleep.set(Some(sleep(*this.timeout)));
-            this.sleep.as_mut().as_pin_mut().unwrap()
-        };
+        if this.sleep.is_none() {
+            *this.sleep = Some(Box::pin(sleep(*this.timeout)));
+        }
+
+        let sleep_pinned = this.sleep.as_mut().map(|p| p.as_mut()).unwrap();
 
         // Error if the timeout has expired.
         if let Poll::Ready(()) = sleep_pinned.poll(cx) {
@@ -99,7 +97,7 @@ where
         // Check for body data.
         let frame = ready!(this.body.poll_frame(cx));
         // A frame is ready. Reset the `Sleep`...
-        this.sleep.set(None);
+        *this.sleep = None;
 
         Poll::Ready(frame.transpose().map_err(Into::into).transpose())
     }
